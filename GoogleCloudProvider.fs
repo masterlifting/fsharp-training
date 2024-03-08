@@ -24,7 +24,7 @@ let downloadFilesTo (path: string) =
             bucket
             |> Seq.filter (fun x ->
                 Option.ofNullable x.TimeCreatedDateTimeOffset
-                |> Option.map ((<=) (dateMin)) // where TimeCreatedDateTimeOffset >= dateMin
+                |> Option.map ((<=) (dateMin)) // where dateMin <= x.TimeCreatedDateTimeOffset
                 |> Option.defaultValue false)
             |> Seq.take 1
 
