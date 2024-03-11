@@ -41,14 +41,19 @@ let downloadFilesTo (path: string) =
         let distributorAgent =
             MailboxProcessor<AsyncReplyChannel<Google.Apis.Storage.v1.Data.Object option>>.Start(fun inbox ->
                 let enum = selected.GetEnumerator()
+                printfn "DistributorAgent started"
 
                 let rec innerLoop () =
                     async {
                         let! rc = inbox.Receive()
 
+                        printfn "DistributorAgent received"
+
                         if enum.MoveNext() then
+                            printfn "DistributorAgent sent"
                             enum.Current |> Some |> rc.Reply
                         else
+                            printfn "DistributorAgent sent None"
                             None |> rc.Reply
 
                         return! innerLoop ()
@@ -57,15 +62,20 @@ let downloadFilesTo (path: string) =
                 innerLoop ())
 
         let downloadWorker continuation =
+            printfn "DownloadWorker started"
+
             let rec innerLoop () =
                 async {
                     match! distributorAgent.PostAndAsyncReply id with
                     | Some doc ->
+                        printfn "DownloadWorker received"
                         let ms = new MemoryStream()
                         do! client.DownloadObjectAsync(doc, ms) |> Async.AwaitTask |> Async.Ignore
                         do! continuation ms
                         return! innerLoop ()
-                    | _ -> ()
+                    | _ ->
+                        printfn "DownloadWorker sent None"
+                        ()
                 }
 
             innerLoop ()
@@ -73,16 +83,21 @@ let downloadFilesTo (path: string) =
         let bq = BlockingQueueAgent<MemoryStream option>(10)
 
         let parsingWorker continuation =
+            printfn "ParsingWorker started"
+
             let rec innerLoop () =
                 async {
                     match! bq.AsyncGet() with
                     | Some ms ->
+                        printfn "ParsingWorker received"
                         ms.Position <- 0L
                         let parser = xmlProvider.Load ms
                         do! ms.DisposeAsync().AsTask() |> Async.AwaitTask
                         do! continuation parser
                         return! innerLoop ()
-                    | _ -> do! bq.AsyncAdd None
+                    | _ ->
+                        printfn "ParsingWorker sent None"
+                        do! bq.AsyncAdd None
                 }
 
             innerLoop ()
@@ -90,15 +105,22 @@ let downloadFilesTo (path: string) =
         let bq_parsers = BlockingQueueAgent<xmlProvider.Survey option>(10)
 
         let rec counterWorker acc =
+            printfn $"CounterWorker started with acc = {acc}"
+
             async {
                 match! bq_parsers.AsyncGet() with
                 | Some parser ->
+                    printfn "CounterWorker received"
                     return! counterWorker (acc + (parser.Questions.Questions |> Array.sumBy (fun x -> x.Winter)))
-                | _ -> return acc // stop
+                | _ ->
+                    printfn "CounterWorker sent"
+                    return acc // stop
             }
 
         async {
             do!
+                printfn "DownloadWorker started"
+
                 List.replicate 3 (downloadWorker (Some >> bq.AsyncAdd))
                 |> Async.Parallel
                 |> Async.Ignore
@@ -109,6 +131,8 @@ let downloadFilesTo (path: string) =
 
         async {
             do!
+                printfn "ParsingWorker started"
+
                 List.replicate 3 (parsingWorker (Some >> bq_parsers.AsyncAdd))
                 |> Async.Parallel
                 |> Async.Ignore
