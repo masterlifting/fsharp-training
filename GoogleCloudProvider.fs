@@ -3,6 +3,8 @@ module GoogleCloudProvider
 open Google.Cloud.Storage.V1
 open System.IO
 open System
+open FSharpx.Control
+open Parser
 
 let private client =
     let clientBUilder = StorageClientBuilder()
@@ -26,16 +28,87 @@ let downloadFilesTo (path: string) =
                 Option.ofNullable x.TimeCreatedDateTimeOffset
                 |> Option.map ((<=) (dateMin)) // where dateMin <= x.TimeCreatedDateTimeOffset
                 |> Option.defaultValue false)
-            |> Seq.take 1
 
-        for doc in selected do
-            use ms = new MemoryStream()
+        let distributorAgent =
+            MailboxProcessor<AsyncReplyChannel<Google.Apis.Storage.v1.Data.Object option>>.Start(fun inbox ->
+                let enum = selected.GetEnumerator()
 
-            do! client.DownloadObjectAsync(doc, ms) |> Async.AwaitTask |> Async.Ignore
+                let rec innerLoop () =
+                    async {
+                        let! rc = inbox.Receive()
 
-            ms.Position <- 0L
-            use file = File.Create <| Path.Combine(path, doc.Name)
+                        if enum.MoveNext() then
+                            enum.Current |> Some |> rc.Reply
+                        else
+                            None |> rc.Reply
 
-            ms.CopyTo(file)
-            file.Flush()
+                        return! innerLoop ()
+                    }
+
+                innerLoop ())
+
+        let downloadWorker continuation =
+            let rec innerLoop () =
+                async {
+                    match! distributorAgent.PostAndAsyncReply id with
+                    | Some doc ->
+                        let ms = new MemoryStream()
+                        do! client.DownloadObjectAsync(doc, ms) |> Async.AwaitTask |> Async.Ignore
+                        do! continuation ms
+                        return! innerLoop ()
+                    | _ -> ()
+                }
+
+            innerLoop ()
+
+        let bq = BlockingQueueAgent<MemoryStream option>(10)
+
+        let parsingWorker continuation =
+            let rec innerLoop () =
+                async {
+                    match! bq.AsyncGet() with
+                    | Some ms ->
+                        ms.Position <- 0L
+                        let parser = xmlProvider.Load ms
+                        do! ms.DisposeAsync().AsTask() |> Async.AwaitTask
+                        do! continuation parser
+                        return! innerLoop ()
+                    | _ -> do! bq.AsyncAdd None
+                }
+
+            innerLoop ()
+
+        let bq_parsers = BlockingQueueAgent<xmlProvider.Survey option>(10)
+
+        let rec counterWorker acc =
+            async {
+                match! bq_parsers.AsyncGet() with
+                | Some parser ->
+                    return! counterWorker (acc + (parser.Questions.Questions |> Array.sumBy (fun x -> x.Winter)))
+                | _ -> return acc // stop
+            }
+
+        async {
+            do!
+                List.replicate 3 (downloadWorker (Some >> bq.AsyncAdd))
+                |> Async.Parallel
+                |> Async.Ignore
+
+            do! bq.AsyncAdd None
+        }
+        |> Async.Start
+
+        async {
+            do!
+                List.replicate 3 (parsingWorker (Some >> bq_parsers.AsyncAdd))
+                |> Async.Parallel
+                |> Async.Ignore
+
+            do! bq_parsers.AsyncAdd None
+        }
+        |> Async.Start
+
+        let count = counterWorker 0 |> Async.RunSynchronously
+
+        printfn "count is %i" count
     }
