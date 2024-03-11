@@ -28,6 +28,15 @@ let downloadFilesTo (path: string) =
                 Option.ofNullable x.TimeCreatedDateTimeOffset
                 |> Option.map ((<=) (dateMin)) // where dateMin <= x.TimeCreatedDateTimeOffset
                 |> Option.defaultValue false)
+            |> Seq.take 3
+
+        // for doc in selected do
+        //     let ms = new MemoryStream()
+        //     do! client.DownloadObjectAsync(doc, ms) |> Async.AwaitTask |> Async.Ignore
+        //     let path = Path.Combine(path, doc.Name)
+        //     use fs = File.Create(path)
+        //     ms.Position <- 0L
+        //     ms.CopyTo(fs)
 
         let distributorAgent =
             MailboxProcessor<AsyncReplyChannel<Google.Apis.Storage.v1.Data.Object option>>.Start(fun inbox ->
